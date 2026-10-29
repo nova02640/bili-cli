@@ -25,7 +25,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # 用带 workflow scope 的 PAT：GITHUB_TOKEN 无权推送 .github/workflows/* 的改动
+          token: ${{ secrets.SYNC_TOKEN }}
 
       - name: Merge upstream into fork
         run: |
