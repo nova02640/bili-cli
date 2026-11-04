@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### Added
+- `bili data active-hours`：粉丝活跃时间。给 24 小时分布（网页上标「近 30 天」，`hours_window`）、星期分布、最活跃时段，以及同一时段的大盘占比（`gap_percent` 是两者的差），还有最近 5 个稿件的发布时段和活跃粉丝的同类分位。数据来自创作中心「数据中心 › 粉丝 › 活跃时段」，`bilibili-api` 没封装这两个接口（`v2/fans/stat/portrayal` 与 `account_diagnose/active_fans_improve_idea`），这里直接按网页请求实现。两个接口的错误都不降级：风控（412）、登录过期、网络问题原样抛出，agent 才知道该停下来。
+- `BILI_CLI_STATE_DIR`：把限流记录（`ratelimit.json`）、审计日志（`audit.log`）和已看列表（`seen.json`）写到指定目录，登录凭证仍留在 `BILI_CLI_HOME`。适合沙箱、只读容器这类只能写工作区的环境。
+
+### Fixed
+- 写操作调用接口之前会先确认状态目录可写；写不了就直接报错（此时还没有副作用），hint 会提示设置 `BILI_CLI_STATE_DIR`。接口成功之后如果仍然写不进去，只往 stderr 打警告，命令保持成功——不会让 Agent 误以为没发出去而重发。
+- `bili video coin --like`：以前只投币、不点赞，返回却显示成功。原因是 `bilibili-api` 17.4.2 的 `pay_coin()` 把参数名写成了 `like`，而 B 站接口要的是 `select_like`，于是被静默忽略。现在投币成功后会先记账、再检查实际关系并显式补赞；补赞走 `video_like` 的限流和审计，失败只在输出里加 `like_error`；最后读取关系失败也返回成功，并用 `relation_error` 标出未确认。两者都不影响已经完成的投币。
+
 ## [1.2.1] - 2026-10-26
 
 ### Fixed
