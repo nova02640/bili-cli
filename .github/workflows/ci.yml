@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+# fork-only：钉住 typer 0.29 回归（见 .github/constraints.txt），上游修复后删除
+env:
+  PIP_CONSTRAINT: ${{ github.workspace }}/.github/constraints.txt
+  UV_CONSTRAINT: ${{ github.workspace }}/.github/constraints.txt
+
 jobs:
   test:
     name: test (${{ matrix.os }}, py${{ matrix.python }})
