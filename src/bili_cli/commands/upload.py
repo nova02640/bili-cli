@@ -51,6 +51,8 @@ TAGS_MAX = 10
 SCHEDULE_MIN_SECONDS = 2 * 3600  # Bilibili accepts scheduled publishing 2 h to 15 days ahead
 SCHEDULE_MAX_SECONDS = 15 * 24 * 3600
 
+# space_hidden: the web upload page's “在个人空间-投稿中隐藏” switch (hidden archives stay public, just not in the space's uploads list)
+SPACE_HIDDEN, SPACE_SHOWN = 1, 2
 # creation_statement ids used by the web uploader
 STATEMENT_NONE = -1
 STATEMENT_AI = 1
@@ -274,6 +276,10 @@ def video_(
         True, "--ai-declare/--no-ai-declare", help="勾选创作声明“含AI生成内容”。默认开启，关闭需显式传 --no-ai-declare。"
     ),
     private: bool = typer.Option(False, "--private", help="仅自己可见（适合测试）。"),
+    hide_in_space: bool = typer.Option(
+        False, "--hide-in-space",
+        help="在个人空间「投稿」列表里隐藏（网页投稿页的“在个人空间-投稿中隐藏”）：稿件照常公开、能被推荐和搜到，只是不占空间的投稿栏。竖屏视频加上它，B 站会当成「动态视频」发（动态卡片带“动态视频”角标）。",
+    ),
     schedule: Optional[str] = typer.Option(None, "--schedule", help="定时发布，ISO 时间（默认北京时间），需在 2 小时到 15 天之后。"),
     topic: Optional[str] = typer.Option(None, "--topic", help="投稿话题（含官方活动话题，如“AI MV 大赛”）：填话题名或话题 ID；有奖活动会自动报名。"),
     season: Optional[int] = typer.Option(None, "--season", help="投稿后直接加进这个合集（合集 ID，见 `bili season list`），加在第一个小节末尾。"),
@@ -365,6 +371,7 @@ def video_(
             "up_close_danmu": close_danmaku,
             "web_os": 1,
             "is_only_self": 1 if private else 0,
+            "space_hidden": SPACE_HIDDEN if hide_in_space else SPACE_SHOWN,
             "creation_statement": {"id": STATEMENT_AI if ai_declare else STATEMENT_NONE},
         }
         if zone.get("zone"):
@@ -390,6 +397,7 @@ def video_(
             "zone": zone,
             "ai_declare": ai_declare,
             "private": private,
+            "hidden_in_space": hide_in_space,
             "schedule": iso_time(dtime),
             "reserve": reserve,
             "topic": topic_info,
@@ -414,7 +422,10 @@ def video_(
             # same image endpoint as the main cover; the archive keeps it in a separate `cover43` field
             meta["cover43"] = await vu.upload_cover(Picture.from_file(str(cover43)), cred)
         pages = [vu.VideoUploaderPage(path=str(f), title=f.stem if len(files) > 1 else title) for f in files]
-        uploader = vu.VideoUploader(pages, meta, cred, cover=Picture.from_file(str(cover_path)), line=line_enum)
+        line_info = await _choose_line_guarded(line_enum)
+        # hand start() the resolved line, otherwise it probes all four lines a second time
+        resolved = next((vu.Lines(k) for k, v in vu.LINES_INFO.items() if v is line_info), None)
+        uploader = vu.VideoUploader(pages, meta, cred, cover=Picture.from_file(str(cover_path)), line=resolved or line_enum)
         if sys.stderr.isatty():
             _progress(uploader)
         res = await uploader.start()
@@ -505,6 +516,7 @@ def status(bvid: str = typer.Argument(..., help="稿件 BV 号。")) -> None:
             "state_desc": arc.get("state_desc"),
             "reject_reason": arc.get("reject_reason") or None,
             "private": arc.get("is_only_self") == 1,
+            "hidden_in_space": is_space_hidden(data),
             "ai_declare": statement.get("id") == STATEMENT_AI,
             "creation_statement": statement.get("content"),
             "tags": [t for t in (arc.get("tag") or "").split(",") if t],
@@ -576,13 +588,33 @@ async def _desc_mentions(values: list[str]) -> dict[str, int]:
     return await _mentions(values, limit=DESC_MENTIONS_MAX)
 
 
+async def _choose_line_guarded(line: vu.Lines | None) -> dict[str, Any]:
+    """Resolve the upload line, turning bilibili-api's silent None into an actionable error.
+
+    `bilibili_api.video_uploader._probe()` starts with `min_cost = 30` and uses the same 30 s as the
+    penalty for a failed line, so when *every* line fails the comparison `30 < 30` never holds and it
+    returns None. `VideoUploader.start()` then stores that None and `self.line["os"]` raises
+    `TypeError: 'NoneType' object is not subscriptable` — an `internal_error` that tells the user nothing.
+    """
+    info = await vu._choose_line(line)
+    if not info:
+        raise BiliError(
+            "network_error",
+            "四条上传线路都测不通，视频还没有开始上传。",
+            hint="先用 `--line bda2`（或 qn / ws / bldsa）指定一条再试；仍然失败多半是证书问题，"
+            "把环境变量 CURL_CA_BUNDLE 指向一个包含 GlobalSign 中间证书的 CA 包。",
+            detail={"lines": [item.value for item in vu.Lines], "step": "upload.choose_line"},
+        )
+    return info
+
+
 async def _upload_file(cred: Credential, video: Path, line: vu.Lines | None) -> dict[str, Any]:
     """Upload one video file on its own (no submit) and return its {filename, cid} for an edit payload."""
     page = vu.VideoUploaderPage(path=str(video), title=video.stem)
     uploader = vu.VideoUploader([page], {}, cred, cover=Picture(), line=line)
     if sys.stderr.isatty():
         _progress(uploader)
-    uploader.line = await vu._choose_line(line)
+    uploader.line = await _choose_line_guarded(line)
     return await uploader._upload_page(page)
 
 
@@ -620,6 +652,13 @@ def current_staffs(view: dict[str, Any]) -> list[dict[str, Any]]:
             for s in view.get("staffs") or [] if s.get("apply_staff_mid")]
 
 
+def is_space_hidden(view: dict[str, Any]) -> bool:
+    """archive/view has the switch twice: top-level `space_hidden` (1 hidden / 2 shown) and `archive.is_space_hidden` (1 / 0)."""
+    if view.get("space_hidden") in (SPACE_HIDDEN, SPACE_SHOWN):
+        return view["space_hidden"] == SPACE_HIDDEN
+    return (view.get("archive") or {}).get("is_space_hidden") == 1
+
+
 def build_edit(view: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:
     """The edit endpoint replaces the whole archive, so start from what B 站 has now and apply the changes."""
     arc = view.get("archive") or {}
@@ -653,6 +692,10 @@ def build_edit(view: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:
     }
     if arc.get("cover43"):
         body["cover43"] = arc["cover43"]
+    if view.get("space_hidden") in (SPACE_HIDDEN, SPACE_SHOWN):  # keep it, or the edit could put the video back in the space
+        body["space_hidden"] = view["space_hidden"]
+    if "hide_in_space" in changes:
+        body["space_hidden"] = SPACE_HIDDEN if changes["hide_in_space"] else SPACE_SHOWN
     if (arc.get("human_type2") or {}).get("id"):
         body["human_type2"] = arc["human_type2"]["id"]
     if arc.get("dtime") and arc.get("state") != 0:  # keep a pending schedule
@@ -690,6 +733,7 @@ def edit(
     cover: Optional[Path] = typer.Option(None, "--cover", help="新封面图片。"),
     cover43: Optional[Path] = typer.Option(None, "--cover43", help="新的 4:3 封面（手机端推荐流）。"),
     ai_declare: Optional[bool] = typer.Option(None, "--ai-declare/--no-ai-declare", help="修改“含AI生成内容”声明；不传则保持不变。"),
+    hide_in_space: Optional[bool] = typer.Option(None, "--hide-in-space/--show-in-space", help="在个人空间「投稿」列表里隐藏 / 重新显示；不传则保持不变。"),
     video: Optional[Path] = typer.Option(None, "--video", help="换源：用这个文件替换稿件的视频（仅限单 P 稿件）。播放、评论等数据保留，重新审核期间一般仍显示旧视频。"),
     line: Optional[str] = typer.Option(None, "--line", help="换源时的上传线路：bda2 / qn / ws / bldsa；不传则自动测速。"),
 ) -> None:
@@ -716,6 +760,8 @@ def edit(
                 raise BiliError("invalid_argument", f"封面文件不存在：{path}")
         if ai_declare is not None:
             changes["ai_declare"] = ai_declare
+        if hide_in_space is not None:
+            changes["hide_in_space"] = hide_in_space
         if video is not None and not video.is_file():
             raise BiliError("invalid_argument", f"视频文件不存在：{video}")
         line_enum = None
@@ -725,7 +771,7 @@ def edit(
             except ValueError as exc:
                 raise BiliError("invalid_argument", "--line 只能是 bda2 / qn / ws / bldsa。") from exc
         if not changes and cover is None and cover43 is None and not desc_at and video is None:
-            raise BiliError("invalid_argument", "没有要修改的内容。", hint="传 --title / --desc / --desc-at / --tag / --cover / --cover43 / --ai-declare / --video 中的至少一个。")
+            raise BiliError("invalid_argument", "没有要修改的内容。", hint="传 --title / --desc / --desc-at / --tag / --cover / --cover43 / --ai-declare / --hide-in-space / --video 中的至少一个。")
         desc_mentions = await _desc_mentions(desc_at)
         view = await _archive_view(cred, bvid)
         require_own_archive(view, bvid)
@@ -739,7 +785,8 @@ def edit(
             if len(changes["desc"]) > DESC_MAX:
                 raise BiliError("invalid_argument", f"加上 @ 后简介超过 {DESC_MAX} 字。")
         before = {"title": arc.get("title"), "desc": arc.get("desc"), "tags": [t for t in (arc.get("tag") or "").split(",") if t],
-                  "ai_declare": (arc.get("creation_statement") or {}).get("id") == STATEMENT_AI}
+                  "ai_declare": (arc.get("creation_statement") or {}).get("id") == STATEMENT_AI,
+                  "hide_in_space": is_space_hidden(view)}
         diff = {k: {"from": before[k], "to": v} for k, v in changes.items() if k != "desc_v2" and before.get(k) != v}
         if desc_mentions:
             diff["desc_at"] = {"to": desc_mentions}

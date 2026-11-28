@@ -71,9 +71,16 @@ bili video relation <BV>                 # 我赞了没、投了几个币、收�
 bili video like <BV>                     # 点赞；--undo 取消
 bili video fav <BV> --folder 学习         # 收藏到指定收藏夹（默认“默认收藏夹”）；--remove 取消
 bili me favs                             # 列出收藏夹
+bili me fav-videos 学习                   # 收藏夹里的视频（新→旧，每页 20）；--since <fav_time> 只列不早于它收藏的（同一秒会重复，按 bvid 去重）
+bili me fav-create MC-生电                # 新建收藏夹（默认私密）
+bili me fav-copy MC MC-生电 <BV> <BV>     # 批量复制（fav-move 移动）；目标里的收藏时间变成现在
+bili me fav-sort MC-生电 --after MC       # 收藏夹排序；--first 排到最前
+bili me fav-sort-videos 学习 <BV> --top    # 收藏夹里视频排序；--after <BV> 排到某个视频后面
 bili video coin <BV> --coins 1           # 投币：必须指定 1 或 2；每个视频最多 2 个，每天本地最多 5 个
 bili video triple <BV>                   # 一键三连（点赞 + 投币 + 收藏）
 ```
+
+整理收藏夹时先 `--dry-run`；写操作不读回确认，做完用 `bili me favs` / `fav-videos` 自己看。读收藏夹内容连续翻很多页会被风控（HTTP 412），每页之间留几秒；`fav-videos --since` 返回 `truncated` 时看 `stopped`：被风控（`risk_control`）就停下来告诉用户，不要重试；其他情况稍后再跑它给的 `next` 接着读。
 
 只对真正看过、觉得好的视频这样做。投币花的是用户的真硬币，没有授权时先问用户。UP 主不能给自己的视频投币（返回 34002）。
 
@@ -130,7 +137,7 @@ bili upload edit <BV> --desc "角色设计 @冬冰 ，感谢！" --desc-at 冬�
 bili upload edit <BV> --video fixed.mp4                     # 换源：上传新文件替换视频（单 P 稿件），标题等不变
 ```
 
-投稿默认带“含AI生成内容”声明；`--private` 仅自己可见，适合先试；`--schedule 2026-10-25T20:00` 定时发布（需 2 小时到 15 天后）。分区由标题自动预测，预测不准时用 `bili upload zones` 查好再 `--zone`。封面有两张：`--cover` 是横版（16:9），`--cover43` 是手机端推荐流用的 4:3 版，两张都给效果最好。
+投稿默认带“含AI生成内容”声明；`--private` 仅自己可见，适合先试；`--hide-in-space` 在个人空间的投稿列表里隐藏（照常公开、能被推荐，只是不占投稿栏；竖屏视频加上它，B 站会当成「动态视频」），已投的稿件用 `bili upload edit <BV> --hide-in-space` / `--show-in-space` 切换；`--schedule 2026-10-25T20:00` 定时发布（需 2 小时到 15 天后）。分区由标题自动预测，预测不准时用 `bili upload zones` 查好再 `--zone`。封面有两张：`--cover` 是横版（16:9），`--cover43` 是手机端推荐流用的 4:3 版，两张都给效果最好。
 
 `--topic "AI MV大赛"` 给稿件挂话题，填话题名或 ID；官方有奖活动的话题会顺带报名（活动对标题、分区等的要求要自己看活动页）。`--schedule … --reserve` 定时发布的同时开视频预约，空间和动态出现预约卡片，粉丝点了预约，发布时会收到提醒（账号要有预约功能，没有时会直接报错）。`--staff "策划:94782782"` 发起联合投稿邀请合作者，可重复传入；需要账号有联合投稿资格（创作等级 Lv3 等），职能要在分区允许的列表里（报错时会列出来），对方 24 小时内在消息里确认才挂名，联合投稿不能转载或仅自己可见，之后也能用 `upload edit` 改稿、换源，合作成员和活动报名会保留。`--season <合集ID>` 投稿后直接加进合集；审核中、定时发布的稿件也能用 `bili season add` 加，互动弹幕（投票等）同样可以在发布前加好。
 

@@ -5,6 +5,7 @@
 ## [Unreleased]
 
 ### Added
+- `bili upload video --hide-in-space`：投稿时打开网页投稿页的「在个人空间-投稿中隐藏」（提交字段 `space_hidden`，1 隐藏 / 2 显示）。稿件照常公开、能被推荐和搜到，只是不占空间的投稿栏。竖屏视频加上它就是 B 站的「动态视频」（动态里显示“发布了动态视频”、卡片带“动态视频”角标），网页端没有单独发动态视频的入口，用这个就行。`bili upload edit --hide-in-space/--show-in-space` 改已投稿件；不传时编辑会保留稿件原来的设置；`bili upload status` 多了 `hidden_in_space`。
 - `bili user coins <UID|昵称>`：对方在主页公开的最近投币（视频、投了几个币、投币时间），输出不含 IP 属地。
 - `bili user favs <UID|昵称>`：对方公开的收藏夹（夹名、视频数）；私有收藏夹任何输出（包括 `--raw`）都不列出，不展开夹内视频。
 - `bili user bangumi <UID|昵称> --type bangumi|cinema`：对方公开的追番 / 追剧，`--page` / `--size` 翻页，有下一页时给 `next_with`。
@@ -13,6 +14,17 @@
 - `bili user info --sections` 显式查询主页总览 `sections`：每个板块的数量（来自主页导航栏，不反映隐私设置）和前 3 条预览，对方没公开的板块标 `hidden`；`more_with` 提示各板块命令。默认 `info` 不额外查询导航与预览；预览最多 2 个并发，失败标记 `error`，导航失败见 `sections_error.navnum`；`--raw --sections` 仅附加 `navnum`。
 - `bili user videos` 的 `items` 保持接口原始排序、条数和分页，第一页的置顶和代表作单列在新增的 `pinned` 字段，带 `label`。
 - 新增的公开板块命令及关注 / 粉丝列表需要登录。对方没公开时（53013 / 22115 / 22118）返回 `hidden: true` 和空 `items`，不报错；公开但为空时 `hidden: false`。
+- `bili me fav-videos [收藏夹]`：列出自己收藏夹里的视频（BV 号、标题、UP 主、时长、发布时间、收藏时间），按收藏时间从新到旧，每页 20 条；失效视频带 `invalid`，音频、合集等非视频条目跳过并计数。`--since <Unix 秒>` 自动翻页（每页间隔 5 秒），只列收藏时间不早于它的视频并给出 `newest_fav_time`，用来轮询“新加进某个收藏夹的视频”；和 since 同一秒的视频会再列一次（批量复制 / 移动的视频收藏时间相同），调用方按 bvid 去重；没有收藏时间的条目照列，不会让扫描提前结束。翻满 50 页、扫描超过约 120 秒、或中途被风控 / 网络错误打断时，返回已经读到的部分，带 `truncated`、`stopped`（打断原因）和接着读的 `next`（`--since` 配 `--page` 起始页）；第 1 页就失败才报错。只读，不经过限流 / 审计。
+- `bili me fav-create <名称>`：新建收藏夹，默认私密（`--public` 公开），不允许和已有收藏夹同名。
+- `bili me fav-copy / fav-move <源> <目标> <BV>...`：一次请求批量复制 / 移动视频（最多 100 个）。目标收藏夹里的收藏时间会变成操作当下，原收藏时间不保留。
+- `bili me fav-sort <收藏夹> --after <收藏夹> | --first`：调整收藏夹之间的顺序（默认收藏夹固定在最前）。
+- `bili me fav-sort-videos <收藏夹> <BV>... --after <BV> | --top`：把视频按给定顺序排到最前或某个视频后面，不改变收藏时间。
+- 以上写操作都支持 `--dry-run`，走 `favorite` 本地限流与审计。BV 号按 aid 去重（`bv1…` 和 `BV1…` 算同一个），无效的 BV 号返回 `invalid_argument`。
+- 已知限制：写操作只看 B 站返回成功，不读回确认（B 站对格式不对的排序、不在收藏夹里的视频也可能返回成功）；一次批量复制 / 移动在本地限流里算 1 次；收藏夹相关的 B 站错误码还没有单独映射，统一是 `api_error`。
+
+### Fixed
+- 收藏夹参数既是某个收藏夹的 ID、又是另一个收藏夹的名称时报 `invalid_argument`，不再默默取第一个；`fav-create` 也不接受和已有收藏夹 ID 相同的名称。
+- `bili me favs` / `bili video fav` 的 `default` 判断：B 站用 `attr` 的第 2 位标记非默认收藏夹（第 1 位是私密），原来按 `attr == 0` 判断，私密的默认收藏夹（`attr` 1）被认成普通收藏夹。
 
 ## [1.4.0] - 2026-11-14
 
@@ -20,6 +32,7 @@
 - `bili article`：专栏的建草稿 / 传图 / 发布 / 原地编辑 / 删除 / 读取，`drafts` 与 `articles` 分别列出草稿箱和已发布文章。创作中心这套接口没有 bilibili-api 封装，实现里记了几个坑：分类字段是 `category` 而不是 `category_id`、`submit` 必须一次给全 `title`+`content`+`category`+`reprint`、上传图片要 `data:` URI、编辑已发布文章要走 `article/update`（`submit` 会新建一篇）。存草稿走独立的本地限流桶（`article_draft`），不占用发布用的 `article` 桶。（#25，感谢 @Kihara777）
 
 ### Fixed
+- `bili upload video` 在四条上传线路全部连不上时（例如 TLS 证书校验失败），报的是 `internal_error: TypeError: 'NoneType' object is not subscriptable`——`bilibili_api` 的测速函数在每条线路都失败时会返回 `None`（`min_cost` 和失败惩罚都是 30，`30 < 30` 不成立），随后 `self.line["os"]` 就炸了。现在先解析线路，全部不可用时直接报 `network_error`，说明"四条线路都测不通、视频还没开始上传"，hint 给出 `--line bda2` 和 `CURL_CA_BUNDLE` 两个方向；解析成功后把线路名交给上传器，不再重复测速一遍。
 - 兼容 typer 0.29：它自带一份 click，参数对象上不再有 `.type`，`bili schema` 和 skill 的安装 / 检查都会报 `AttributeError: 'TyperOption' object has no attribute 'type'`。类型名现在改从 typer 的类型描述推出，新旧 typer 下 `bili schema` 的输出逐字一致。
 - `asr` 用云端模型时，模型 id 里的 `/` 不再被当成缓存路径的一部分。（#21，感谢 @bjstan1979）
 - `upload edit` 对不是自己的稿件直接拒绝，`--dry-run` 不再误报成功。（#22，感谢 @bjstan1979）
